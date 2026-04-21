@@ -18,7 +18,7 @@ CUMULATIVE_DATA_URL = f"{SUPERVISED_BASE_URL}/cumulative_data"
 PORTFOLIO_URL = f"{PORTFOLIO_BASE_URL}/portfolio"
 
 KMEANS_MODEL = "kmeans_v1"
-SUPERVISED_MODEL = "xgb_target4_5d_platt_oof_v1"
+SUPERVISED_MODEL = "rf_target4_5d_platt_oof_v1"
 CURRENT_MODEL = "rf_target4_5d_platt_oof_v1"
 PORTFOLIO_MODEL = "rf_target4_5d_platt_oof_v1"
 
