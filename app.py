@@ -23,7 +23,7 @@ PORTFOLIO_MODEL = "rf_target4_5d_platt_oof_v1"
 
 KMEANS_MODEL_INFO = {
     "description": "This model is a K-means clustering model.",
-    "date_min": "2005-01-01",
+    "date_min": "2008-05-01",
     "date_max": "2026-01-01",
     "label_mapping": {
         "0": "low_vol",
