@@ -5,7 +5,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 KMEANS_BASE_URL = "https://mvp-regime-detection-engine-499158301097.europe-west1.run.app"
-SUPERVISED_BASE_URL = "https://regime-detection-engine-florent-test-751594616197.europe-west1.run.app"
+SUPERVISED_BASE_URL = "https://regime-detection-engine-ptfl-499158301097.europe-west1.run.app"
 PORTFOLIO_BASE_URL = "https://regime-detection-engine-ptfl-499158301097.europe-west1.run.app"
 
 KMEANS_PREDICT_URL = f"{KMEANS_BASE_URL}/predict"
