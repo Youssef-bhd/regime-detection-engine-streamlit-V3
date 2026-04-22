@@ -112,12 +112,6 @@ def format_percent(value: float | int | None) -> str:
     return f"{float(value) * 100:.2f}%"
 
 
-def format_percent_direct(value: float | int | None) -> str:
-    if value is None:
-        return "N/A"
-    return f"{float(value):.1f}%"
-
-
 def format_decimal(value: float | int | None) -> str:
     if value is None:
         return "N/A"
@@ -216,14 +210,16 @@ def get_portfolio_data(
     date_start: str,
     date_end: str,
     allocation_mode: str,
-    alloc_on: dict,
-    alloc_off: dict,
+    alloc_on: dict | None,
+    alloc_off: dict | None,
     min_episode_days: int,
     transaction_cost: float,
     opt_w_min: float,
     opt_w_max: float,
     opt_source: str,
 ) -> dict:
+    benchmark_alloc = alloc_on if alloc_on is not None else DEFAULT_ALLOC_ON
+
     payload = {
         "model_selection": model_selection,
         "date_start": date_start,
@@ -231,9 +227,8 @@ def get_portfolio_data(
         "min_episode_days": min_episode_days,
         "transaction_cost": transaction_cost,
         "benchmark_name": "Buy & Hold",
-        # Use the user's Risk-On allocation as the benchmark buy-and-hold mix
-        "benchmark_alloc_on": alloc_on,
-        "benchmark_alloc_off": alloc_on,
+        "benchmark_alloc_on": benchmark_alloc,
+        "benchmark_alloc_off": benchmark_alloc,
     }
 
     if allocation_mode == "Manual":
@@ -964,7 +959,7 @@ with tab_regime:
     else:
         default_end = min(
             pd.Timestamp(date_max),
-            pd.Timestamp(date_min) + pd.Timedelta(days=30),
+            pd.Timestamp("2008-05-01") + pd.Timedelta(days=30),
         ).date()
 
         with st.form("date_range_form"):
@@ -973,7 +968,7 @@ with tab_regime:
             with col_start:
                 start_date = st.date_input(
                     "Start date",
-                    value=date_min,
+                    value=pd.to_datetime("2008-05-01").date(),
                     min_value=date_min,
                     max_value=date_max,
                     key="kmeans_start_date",
@@ -1262,44 +1257,136 @@ with tab_portfolio:
             horizontal=True,
         )
 
-        st.markdown("### Risk-On Allocation")
-        on_col1, on_col2, on_col3, on_col4 = st.columns(4)
-
-        with on_col1:
-            alloc_on_sp500 = st.number_input("SP500", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_ON["SP500"], step=0.05, format="%.2f")
-        with on_col2:
-            alloc_on_us10y = st.number_input("US_10Y", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_ON["US_10Y"], step=0.05, format="%.2f")
-        with on_col3:
-            alloc_on_gold = st.number_input("Gold", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_ON["Gold"], step=0.05, format="%.2f")
-        with on_col4:
-            alloc_on_btc = st.number_input("BTC", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_ON["BTC"], step=0.05, format="%.2f")
-
-        st.markdown("### Risk-Off Allocation")
-        off_col1, off_col2, off_col3, off_col4 = st.columns(4)
-
-        with off_col1:
-            alloc_off_sp500 = st.number_input("SP500 ", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_OFF["SP500"], step=0.05, format="%.2f")
-        with off_col2:
-            alloc_off_us10y = st.number_input("US_10Y ", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_OFF["US_10Y"], step=0.05, format="%.2f")
-        with off_col3:
-            alloc_off_gold = st.number_input("Gold ", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_OFF["Gold"], step=0.05, format="%.2f")
-        with off_col4:
-            alloc_off_btc = st.number_input("BTC ", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_OFF["BTC"], step=0.05, format="%.2f")
-
         opt_w_min = 0.05
         opt_w_max = 0.70
         opt_source = "predicted"
+
+        alloc_on = None
+        alloc_off = None
+
+        if allocation_mode == "Manual":
+            st.markdown("### Risk-On Allocation")
+            on_col1, on_col2, on_col3, on_col4 = st.columns(4)
+
+            with on_col1:
+                alloc_on_sp500 = st.number_input(
+                    "SP500",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=DEFAULT_ALLOC_ON["SP500"],
+                    step=0.05,
+                    format="%.2f",
+                )
+            with on_col2:
+                alloc_on_us10y = st.number_input(
+                    "US_10Y",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=DEFAULT_ALLOC_ON["US_10Y"],
+                    step=0.05,
+                    format="%.2f",
+                )
+            with on_col3:
+                alloc_on_gold = st.number_input(
+                    "Gold",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=DEFAULT_ALLOC_ON["Gold"],
+                    step=0.05,
+                    format="%.2f",
+                )
+            with on_col4:
+                alloc_on_btc = st.number_input(
+                    "BTC",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=DEFAULT_ALLOC_ON["BTC"],
+                    step=0.05,
+                    format="%.2f",
+                )
+
+            st.markdown("### Risk-Off Allocation")
+            off_col1, off_col2, off_col3, off_col4 = st.columns(4)
+
+            with off_col1:
+                alloc_off_sp500 = st.number_input(
+                    "SP500 ",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=DEFAULT_ALLOC_OFF["SP500"],
+                    step=0.05,
+                    format="%.2f",
+                )
+            with off_col2:
+                alloc_off_us10y = st.number_input(
+                    "US_10Y ",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=DEFAULT_ALLOC_OFF["US_10Y"],
+                    step=0.05,
+                    format="%.2f",
+                )
+            with off_col3:
+                alloc_off_gold = st.number_input(
+                    "Gold ",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=DEFAULT_ALLOC_OFF["Gold"],
+                    step=0.05,
+                    format="%.2f",
+                )
+            with off_col4:
+                alloc_off_btc = st.number_input(
+                    "BTC ",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=DEFAULT_ALLOC_OFF["BTC"],
+                    step=0.05,
+                    format="%.2f",
+                )
+
+            alloc_on = {
+                "SP500": alloc_on_sp500,
+                "US_10Y": alloc_on_us10y,
+                "Gold": alloc_on_gold,
+                "BTC": alloc_on_btc,
+            }
+
+            alloc_off = {
+                "SP500": alloc_off_sp500,
+                "US_10Y": alloc_off_us10y,
+                "Gold": alloc_off_gold,
+                "BTC": alloc_off_btc,
+            }
 
         if allocation_mode == "Optimized (Max Sharpe)":
             st.markdown("### Optimization parameters")
             opt_col1, opt_col2, opt_col3 = st.columns(3)
 
             with opt_col1:
-                opt_w_min = st.number_input("Minimum weight", min_value=0.0, max_value=1.0, value=0.05, step=0.01, format="%.2f")
+                opt_w_min = st.number_input(
+                    "Minimum weight",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.05,
+                    step=0.01,
+                    format="%.2f",
+                )
             with opt_col2:
-                opt_w_max = st.number_input("Maximum weight", min_value=0.0, max_value=1.0, value=0.70, step=0.01, format="%.2f")
+                opt_w_max = st.number_input(
+                    "Maximum weight",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.70,
+                    step=0.01,
+                    format="%.2f",
+                )
             with opt_col3:
-                opt_source = st.selectbox("Optimization source", ["predicted"], index=0)
+                opt_source = st.selectbox(
+                    "Optimization source",
+                    ["predicted"],
+                    index=0,
+                )
 
         advanced_col1, advanced_col2 = st.columns(2)
         with advanced_col1:
@@ -1309,32 +1396,23 @@ with tab_portfolio:
 
         submitted = st.form_submit_button("Run portfolio backtest")
 
-    alloc_on = {
-        "SP500": alloc_on_sp500,
-        "US_10Y": alloc_on_us10y,
-        "Gold": alloc_on_gold,
-        "BTC": alloc_on_btc,
-    }
-
-    alloc_off = {
-        "SP500": alloc_off_sp500,
-        "US_10Y": alloc_off_us10y,
-        "Gold": alloc_off_gold,
-        "BTC": alloc_off_btc,
-    }
-
-    sum_col1, sum_col2 = st.columns(2)
-    with sum_col1:
-        st.caption(f"Risk-On allocation sum: {sum(alloc_on.values()):.2f}")
-    with sum_col2:
-        st.caption(f"Risk-Off allocation sum: {sum(alloc_off.values()):.2f}")
+    if allocation_mode == "Manual" and alloc_on is not None and alloc_off is not None:
+        sum_col1, sum_col2 = st.columns(2)
+        with sum_col1:
+            st.caption(f"Risk-On allocation sum: {sum(alloc_on.values()):.2f}")
+        with sum_col2:
+            st.caption(f"Risk-Off allocation sum: {sum(alloc_off.values()):.2f}")
 
     if submitted:
         if start_date > end_date:
             st.error("Start date must be earlier than or equal to end date.")
         else:
-            on_error = validate_weights(alloc_on, "Risk-On allocation")
-            off_error = validate_weights(alloc_off, "Risk-Off allocation")
+            on_error = None
+            off_error = None
+
+            if allocation_mode == "Manual":
+                on_error = validate_weights(alloc_on, "Risk-On allocation")
+                off_error = validate_weights(alloc_off, "Risk-Off allocation")
 
             if on_error:
                 st.error(on_error)
@@ -1397,6 +1475,7 @@ with tab_portfolio:
 
         with col6:
             st.metric("Risk-off time", metrics.get("%_time_risk_off", "N/A"))
+
 
         st.plotly_chart(
             create_portfolio_dashboard_chart(portfolio_data, benchmark_data),
