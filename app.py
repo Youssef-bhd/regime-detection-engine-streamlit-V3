@@ -14,17 +14,14 @@ PREDICT_LATEST_URL = f"{SUPERVISED_BASE_URL}/predict/latest"
 PREDICT_SERIES_URL = f"{SUPERVISED_BASE_URL}/predict/series"
 ANALYZE_URL = f"{SUPERVISED_BASE_URL}/analyze"
 CUMULATIVE_DATA_URL = f"{SUPERVISED_BASE_URL}/cumulative_data"
-
 PORTFOLIO_URL = f"{PORTFOLIO_BASE_URL}/portfolio"
 
 KMEANS_MODEL = "kmeans_v1"
 SUPERVISED_MODEL = "rf_target4_5d_platt_oof_v1"
-CURRENT_MODEL = "rf_target4_5d_platt_oof_v1"
-PORTFOLIO_MODEL = "rf_target4_5d_platt_oof_v1"
 
 KMEANS_MODEL_INFO = {
     "description": "This model is a K-means clustering model.",
-    "date_min": "2008-05-01",
+    "date_min": "2005-01-01",
     "date_max": "2026-01-01",
     "label_mapping": {
         "0": "low_vol",
@@ -36,17 +33,7 @@ KMEANS_MODEL_INFO = {
 SUPERVISED_MODEL_INFO = {
     "description": "This model predicts Risk-On / Risk-Off regimes using supervised learning.",
     "date_min": "2007-01-01",
-    "date_max": "2026-04-14",
-    "label_mapping": {
-        "0": "Risk-On",
-        "1": "Risk-Off",
-    },
-}
-
-PORTFOLIO_MODEL_INFO = {
-    "description": "This model is used for the regime-switching portfolio backtest.",
-    "date_min": "2007-01-01",
-    "date_max": "2026-04-14",
+    "date_max": "2026-04-20",
     "label_mapping": {
         "0": "Risk-On",
         "1": "Risk-Off",
@@ -59,6 +46,8 @@ REGIME_DISPLAY = {
     "high_vol": "High Vol",
     "Risk-On": "Risk-On",
     "Risk-Off": "Risk-Off",
+    "RISK-ON": "Risk-On",
+    "RISK-OFF": "Risk-Off",
     "risk_on": "Risk-On",
     "risk_off": "Risk-Off",
     "unknown": "Unknown",
@@ -70,6 +59,8 @@ REGIME_COLORS = {
     "high_vol": "#D62828",
     "Risk-On": "#2E8B57",
     "Risk-Off": "#D62828",
+    "RISK-ON": "#2E8B57",
+    "RISK-OFF": "#D62828",
     "risk_on": "#2E8B57",
     "risk_off": "#D62828",
     "unknown": "#808080",
@@ -85,7 +76,6 @@ ASSET_DISPLAY = {
     "BTC-USD": "Bitcoin",
     "BTC": "Bitcoin",
     "PORTFOLIO": "Portfolio",
-    "portfolio": "Portfolio",
 }
 
 DEFAULT_WEIGHTS = {
@@ -95,6 +85,20 @@ DEFAULT_WEIGHTS = {
     "BTC": 0.1,
 }
 
+DEFAULT_ALLOC_ON = {
+    "SP500": 0.50,
+    "US_10Y": 0.20,
+    "Gold": 0.20,
+    "BTC": 0.10,
+}
+
+DEFAULT_ALLOC_OFF = {
+    "SP500": 0.10,
+    "US_10Y": 0.50,
+    "Gold": 0.30,
+    "BTC": 0.10,
+}
+
 st.set_page_config(
     page_title="Regime Detection Engine",
     page_icon="📈",
@@ -102,13 +106,19 @@ st.set_page_config(
 )
 
 
-def format_percent(value):
+def format_percent(value: float | int | None) -> str:
     if value is None:
         return "N/A"
     return f"{float(value) * 100:.2f}%"
 
 
-def format_decimal(value):
+def format_percent_direct(value: float | int | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{float(value):.1f}%"
+
+
+def format_decimal(value: float | int | None) -> str:
     if value is None:
         return "N/A"
     return f"{float(value):.2f}"
@@ -183,7 +193,6 @@ def get_analyze_data(model_selection: str, date_start: str, date_end: str, weigh
             "weights": weights,
             "custom_tickers": {},
         },
-        timeout=120,
     )
 
 
@@ -198,7 +207,6 @@ def get_cumulative_data(model_selection: str, date_start: str, date_end: str, we
             "weights": weights,
             "custom_tickers": {},
         },
-        timeout=120,
     )
 
 
@@ -207,24 +215,71 @@ def get_portfolio_data(
     model_selection: str,
     date_start: str,
     date_end: str,
+    allocation_mode: str,
     alloc_on: dict,
     alloc_off: dict,
+    min_episode_days: int,
+    transaction_cost: float,
+    opt_w_min: float,
+    opt_w_max: float,
+    opt_source: str,
 ) -> dict:
     payload = {
         "model_selection": model_selection,
         "date_start": date_start,
         "date_end": date_end,
-        "alloc_on": alloc_on,
-        "alloc_off": alloc_off,
-        "min_episode_days": 20,
-        "transaction_cost": 0.001,
-        "name": "Regime Portfolio",
+        "min_episode_days": min_episode_days,
+        "transaction_cost": transaction_cost,
         "benchmark_name": "Buy & Hold",
+        # Use the user's Risk-On allocation as the benchmark buy-and-hold mix
+        "benchmark_alloc_on": alloc_on,
+        "benchmark_alloc_off": alloc_on,
     }
-    return request_post(PORTFOLIO_URL, payload, timeout=300)
+
+    if allocation_mode == "Manual":
+        payload.update(
+            {
+                "alloc_on": alloc_on,
+                "alloc_off": alloc_off,
+                "name": "Regime Portfolio",
+            }
+        )
+    else:
+        payload.update(
+            {
+                "optimize": True,
+                "opt_method": "max_sharpe",
+                "opt_w_min": opt_w_min,
+                "opt_w_max": opt_w_max,
+                "opt_source": opt_source,
+                "name": "Optimized Portfolio (Max Sharpe)",
+            }
+        )
+
+    return request_post(PORTFOLIO_URL, payload, timeout=180)
 
 
-def create_single_date_chart(history_df: pd.DataFrame, selected_date: pd.Timestamp, regime_label: str) -> go.Figure:
+def validate_weights(weights: dict, label: str) -> str | None:
+    total = sum(weights.values())
+
+    if any(value < 0 for value in weights.values()):
+        return f"{label} contains a negative weight."
+
+    if abs(total - 1.0) > 0.01:
+        return f"{label} must sum to 1.00. Current sum: {total:.2f}"
+
+    return None
+
+
+def prettify_regime_label(label: str) -> str:
+    return REGIME_DISPLAY.get(label, label)
+
+
+def create_single_date_chart(
+    history_df: pd.DataFrame,
+    selected_date: pd.Timestamp,
+    regime_label: str,
+) -> go.Figure:
     fig = go.Figure()
 
     fig.add_trace(
@@ -244,7 +299,7 @@ def create_single_date_chart(history_df: pd.DataFrame, selected_date: pd.Timesta
             x=[selected_row["prediction_date"]],
             y=[selected_row["vix_level"]],
             mode="markers",
-            name=f"Predicted regime: {REGIME_DISPLAY.get(regime_label, regime_label)}",
+            name=f"Predicted regime: {prettify_regime_label(regime_label)}",
             marker=dict(
                 size=14,
                 color=REGIME_COLORS.get(regime_label, "#808080"),
@@ -333,7 +388,7 @@ def create_range_chart(history_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def create_supervised_series_chart(series_df: pd.DataFrame) -> go.Figure:
+def create_supervised_series_chart(series_df: pd.DataFrame, threshold: float) -> go.Figure:
     fig = make_subplots(
         rows=2,
         cols=1,
@@ -355,7 +410,7 @@ def create_supervised_series_chart(series_df: pd.DataFrame) -> go.Figure:
     )
 
     fig.add_hline(
-        y=0.16,
+        y=threshold,
         line_dash="dash",
         line_color="gray",
         annotation_text="Threshold",
@@ -444,7 +499,7 @@ def create_stats_bar_chart(stats_df: pd.DataFrame, metric: str) -> go.Figure:
             go.Bar(
                 x=regime_df["name"].map(lambda x: ASSET_DISPLAY.get(x, x)),
                 y=regime_df[metric],
-                name=REGIME_DISPLAY.get(regime, regime),
+                name=prettify_regime_label(regime),
             )
         )
 
@@ -459,7 +514,213 @@ def create_stats_bar_chart(stats_df: pd.DataFrame, metric: str) -> go.Figure:
     return fig
 
 
-def create_weights_chart(weights_data: list) -> go.Figure:
+def add_risk_off_shading(fig: go.Figure, regime_signal: list[dict], row: int | None = None, col: int | None = None) -> None:
+    if not regime_signal:
+        return
+
+    regime_df = pd.DataFrame(regime_signal)
+    if regime_df.empty:
+        return
+
+    regime_df["date"] = pd.to_datetime(regime_df["date"])
+    regime_df = regime_df.sort_values("date").reset_index(drop=True)
+
+    def is_risk_off(value: str) -> bool:
+        return str(value).strip().lower() in {"risk-off", "risk_off", "1"}
+
+    start = None
+
+    for i, row_data in regime_df.iterrows():
+        current_is_off = is_risk_off(row_data["regime"])
+
+        if current_is_off and start is None:
+            start = row_data["date"]
+
+        is_last = i == len(regime_df) - 1
+        next_is_off = False if is_last else is_risk_off(regime_df.loc[i + 1, "regime"])
+
+        if start is not None and (is_last or not next_is_off):
+            end = row_data["date"]
+            kwargs = {
+                "x0": start,
+                "x1": end,
+                "fillcolor": "rgba(214, 40, 40, 0.10)",
+                "line_width": 0,
+            }
+
+            if row is not None and col is not None:
+                fig.add_vrect(row=row, col=col, **kwargs)
+            else:
+                fig.add_vrect(**kwargs)
+
+            start = None
+
+
+def create_portfolio_dashboard_chart(portfolio_data: dict, benchmark_data: dict | None = None) -> go.Figure:
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.5, 0.25, 0.25],
+        subplot_titles=("Equity Curve", "Drawdown", "Rolling 1Y Sharpe"),
+    )
+
+    portfolio_equity = pd.DataFrame(
+        {
+            "date": pd.to_datetime(portfolio_data["equity_curve"]["dates"]),
+            "cum_return_pct": portfolio_data["equity_curve"]["cum_return_pct"],
+        }
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=portfolio_equity["date"],
+            y=portfolio_equity["cum_return_pct"],
+            mode="lines",
+            name=portfolio_data.get("name", "Portfolio"),
+            line=dict(color="#00D4AA", width=3),
+        ),
+        row=1,
+        col=1,
+    )
+
+    if benchmark_data and "equity_curve" in benchmark_data:
+        benchmark_equity = pd.DataFrame(
+            {
+                "date": pd.to_datetime(benchmark_data["equity_curve"]["dates"]),
+                "cum_return_pct": benchmark_data["equity_curve"]["cum_return_pct"],
+            }
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=benchmark_equity["date"],
+                y=benchmark_equity["cum_return_pct"],
+                mode="lines",
+                name=benchmark_data.get("name", "Benchmark"),
+                line=dict(color="#9AA0A6", width=2, dash="dash"),
+            ),
+            row=1,
+            col=1,
+        )
+
+    portfolio_drawdown = pd.DataFrame(
+        {
+            "date": pd.to_datetime(portfolio_data["drawdown"]["dates"]),
+            "drawdown_pct": portfolio_data["drawdown"]["drawdown_pct"],
+        }
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=portfolio_drawdown["date"],
+            y=portfolio_drawdown["drawdown_pct"],
+            mode="lines",
+            name="Portfolio drawdown",
+            line=dict(color="#FF4D6D", width=1.5),
+            fill="tozeroy",
+            showlegend=False,
+        ),
+        row=2,
+        col=1,
+    )
+
+    if benchmark_data and "drawdown" in benchmark_data:
+        benchmark_drawdown = pd.DataFrame(
+            {
+                "date": pd.to_datetime(benchmark_data["drawdown"]["dates"]),
+                "drawdown_pct": benchmark_data["drawdown"]["drawdown_pct"],
+            }
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=benchmark_drawdown["date"],
+                y=benchmark_drawdown["drawdown_pct"],
+                mode="lines",
+                name="Benchmark drawdown",
+                line=dict(color="#9AA0A6", width=1.2, dash="dash"),
+                showlegend=False,
+            ),
+            row=2,
+            col=1,
+        )
+
+    portfolio_sharpe = pd.DataFrame(
+        {
+            "date": pd.to_datetime(portfolio_data["rolling_sharpe_1y"]["dates"]),
+            "sharpe": [
+                value if value is not None else None
+                for value in portfolio_data["rolling_sharpe_1y"]["sharpe"]
+            ],
+        }
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=portfolio_sharpe["date"],
+            y=portfolio_sharpe["sharpe"],
+            mode="lines",
+            name="Portfolio rolling Sharpe",
+            line=dict(color="#F0A500", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(240, 165, 0, 0.12)",
+            showlegend=False,
+        ),
+        row=3,
+        col=1,
+    )
+
+    if benchmark_data and "rolling_sharpe_1y" in benchmark_data:
+        benchmark_sharpe = pd.DataFrame(
+            {
+                "date": pd.to_datetime(benchmark_data["rolling_sharpe_1y"]["dates"]),
+                "sharpe": [
+                    value if value is not None else None
+                    for value in benchmark_data["rolling_sharpe_1y"]["sharpe"]
+                ],
+            }
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=benchmark_sharpe["date"],
+                y=benchmark_sharpe["sharpe"],
+                mode="lines",
+                name="Benchmark rolling Sharpe",
+                line=dict(color="#9AA0A6", width=1.2, dash="dash"),
+                showlegend=False,
+            ),
+            row=3,
+            col=1,
+        )
+
+    regime_signal = portfolio_data.get("regime_signal", [])
+    add_risk_off_shading(fig, regime_signal, row=1, col=1)
+    add_risk_off_shading(fig, regime_signal, row=2, col=1)
+    add_risk_off_shading(fig, regime_signal, row=3, col=1)
+
+    fig.add_hline(y=0, line_dash="dot", line_color="gray", row=1, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="gray", row=2, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="gray", row=3, col=1)
+    fig.add_hline(y=1, line_dash="dot", line_color="gray", opacity=0.4, row=3, col=1)
+
+    fig.update_yaxes(title_text="Cum. Return (%)", row=1, col=1)
+    fig.update_yaxes(title_text="Drawdown (%)", row=2, col=1)
+    fig.update_yaxes(title_text="Sharpe", row=3, col=1)
+    fig.update_xaxes(title_text="Date", row=3, col=1)
+
+    fig.update_layout(
+        title=f"{portfolio_data.get('name', 'Portfolio')} vs {benchmark_data.get('name', 'Benchmark') if benchmark_data else 'Benchmark'}",
+        height=950,
+        legend_title="Series",
+    )
+
+    return fig
+
+
+def create_weights_chart(weights_data: list[dict]) -> go.Figure:
     rows = []
 
     for item in weights_data:
@@ -504,172 +765,93 @@ def create_weights_chart(weights_data: list) -> go.Figure:
     return fig
 
 
-def create_portfolio_dashboard_chart(portfolio_data: dict, benchmark_data=None) -> go.Figure:
-    fig = make_subplots(
-        rows=3,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        row_heights=[0.5, 0.25, 0.25],
-        subplot_titles=(
-            "Cumulative Return",
-            "Drawdown",
-            "Rolling Sharpe 1Y",
-        ),
-    )
+def create_regime_signal_chart(regime_signal: list[dict]) -> go.Figure:
+    regime_df = pd.DataFrame(regime_signal)
+    regime_df["date"] = pd.to_datetime(regime_df["date"])
 
-    regime_signal = portfolio_data.get("regime_signal", [])
+    regime_map = {
+        "Risk-On": 1,
+        "Risk-Off": 0,
+        "RISK-ON": 1,
+        "RISK-OFF": 0,
+        "risk_on": 1,
+        "risk_off": 0,
+        1: 1,
+        0: 0,
+    }
 
-    if regime_signal:
-        spans = []
-        start = None
+    regime_df["regime_numeric"] = regime_df["regime"].map(regime_map)
 
-        for item in regime_signal:
-            regime = item.get("regime")
-            date = pd.to_datetime(item["date"])
-
-            is_risk_off = regime in ["Risk-Off", "risk_off", 0]
-
-            if is_risk_off and start is None:
-                start = date
-            elif not is_risk_off and start is not None:
-                spans.append((start, date))
-                start = None
-
-        if start is not None:
-            spans.append((start, pd.to_datetime(regime_signal[-1]["date"])))
-
-        for row in [1, 2, 3]:
-            for span_start, span_end in spans:
-                fig.add_vrect(
-                    x0=span_start,
-                    x1=span_end,
-                    fillcolor="rgba(214, 40, 40, 0.08)",
-                    line_width=0,
-                    row=row,
-                    col=1,
-                )
-
-    p_eq = portfolio_data["equity_curve"]
-    p_eq_dates = pd.to_datetime(p_eq["dates"])
-    p_cum = p_eq.get("cum_return_pct")
-
-    if p_cum is None:
-        p_equity = pd.Series(p_eq["equity"])
-        p_cum = (p_equity / p_equity.iloc[0] - 1.0) * 100
+    fig = go.Figure()
 
     fig.add_trace(
         go.Scatter(
-            x=p_eq_dates,
-            y=p_cum,
+            x=regime_df["date"],
+            y=regime_df["regime_numeric"],
             mode="lines",
-            name=portfolio_data.get("name", "Portfolio"),
-            line=dict(color="#00d4aa", width=2.5),
-        ),
-        row=1,
-        col=1,
+            name="Regime signal",
+            line=dict(color="#0B7285", width=2, shape="hv"),
+        )
     )
 
-    if benchmark_data and "equity_curve" in benchmark_data:
-        b_eq = benchmark_data["equity_curve"]
-        b_eq_dates = pd.to_datetime(b_eq["dates"])
-        b_cum = b_eq.get("cum_return_pct")
-
-        if b_cum is None:
-            b_equity = pd.Series(b_eq["equity"])
-            b_cum = (b_equity / b_equity.iloc[0] - 1.0) * 100
-
-        fig.add_trace(
-            go.Scatter(
-                x=b_eq_dates,
-                y=b_cum,
-                mode="lines",
-                name=benchmark_data.get("name", "Benchmark"),
-                line=dict(color="#d4a000", width=2, dash="dash"),
-            ),
-            row=1,
-            col=1,
-        )
-
-    p_dd = portfolio_data["drawdown"]
-    fig.add_trace(
-        go.Scatter(
-            x=pd.to_datetime(p_dd["dates"]),
-            y=p_dd["drawdown_pct"],
-            mode="lines",
-            name="Portfolio drawdown",
-            line=dict(color="#00d4aa", width=1.5),
-            fill="tozeroy",
-            fillcolor="rgba(0, 212, 170, 0.15)",
-            showlegend=False,
-        ),
-        row=2,
-        col=1,
+    fig.update_yaxes(
+        tickmode="array",
+        tickvals=[0, 1],
+        ticktext=["Risk-Off", "Risk-On"],
     )
-
-    if benchmark_data and "drawdown" in benchmark_data:
-        b_dd = benchmark_data["drawdown"]
-        fig.add_trace(
-            go.Scatter(
-                x=pd.to_datetime(b_dd["dates"]),
-                y=b_dd["drawdown_pct"],
-                mode="lines",
-                name="Benchmark drawdown",
-                line=dict(color="#d4a000", width=1.2, dash="dash"),
-                fill="tozeroy",
-                fillcolor="rgba(212, 160, 0, 0.08)",
-                showlegend=False,
-            ),
-            row=2,
-            col=1,
-        )
-
-    p_rs = portfolio_data["rolling_sharpe_1y"]
-    p_rs_values = [v if v is not None else None for v in p_rs["sharpe"]]
-    fig.add_trace(
-        go.Scatter(
-            x=pd.to_datetime(p_rs["dates"]),
-            y=p_rs_values,
-            mode="lines",
-            name="Portfolio rolling Sharpe",
-            line=dict(color="#00d4aa", width=1.8),
-            showlegend=False,
-        ),
-        row=3,
-        col=1,
-    )
-
-    if benchmark_data and "rolling_sharpe_1y" in benchmark_data:
-        b_rs = benchmark_data["rolling_sharpe_1y"]
-        b_rs_values = [v if v is not None else None for v in b_rs["sharpe"]]
-        fig.add_trace(
-            go.Scatter(
-                x=pd.to_datetime(b_rs["dates"]),
-                y=b_rs_values,
-                mode="lines",
-                name="Benchmark rolling Sharpe",
-                line=dict(color="#d4a000", width=1.2, dash="dash"),
-                showlegend=False,
-            ),
-            row=3,
-            col=1,
-        )
-
-    fig.add_hline(y=0, line_dash="dot", line_color="gray", row=1, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="gray", row=2, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="gray", row=3, col=1)
-    fig.add_hline(y=1, line_dash="dot", line_color="gray", opacity=0.5, row=3, col=1)
-
-    fig.update_yaxes(title_text="Cumulative return (%)", row=1, col=1)
-    fig.update_yaxes(title_text="Drawdown (%)", row=2, col=1)
-    fig.update_yaxes(title_text="Rolling Sharpe 1Y", row=3, col=1)
-    fig.update_xaxes(title_text="Date", row=3, col=1)
 
     fig.update_layout(
-        title=f"{portfolio_data.get('name', 'Portfolio')} vs {benchmark_data.get('name', 'Benchmark') if benchmark_data else 'Benchmark'}",
-        height=950,
-        legend_title="Series",
-        hovermode="x unified",
+        title="Predicted Regime Signal",
+        xaxis_title="Date",
+        yaxis_title="Regime",
+        height=350,
+        showlegend=False,
+    )
+
+    return fig
+
+
+def create_performance_comparison_chart(portfolio_data: dict, benchmark_data: dict | None = None) -> go.Figure:
+    portfolio_metrics = portfolio_data.get("metrics_raw", {})
+    benchmark_metrics = benchmark_data.get("metrics_raw", {}) if benchmark_data else {}
+
+    metrics_to_plot = [
+        ("ann_return", "Ann. Return"),
+        ("ann_vol", "Volatility"),
+        ("sharpe", "Sharpe"),
+        ("max_drawdown", "Max Drawdown"),
+        ("calmar", "Calmar"),
+    ]
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Bar(
+            y=[label for _, label in metrics_to_plot],
+            x=[portfolio_metrics.get(key, 0) for key, _ in metrics_to_plot],
+            name=portfolio_data.get("name", "Portfolio"),
+            orientation="h",
+            marker_color="#00D4AA",
+        )
+    )
+
+    if benchmark_data:
+        fig.add_trace(
+            go.Bar(
+                y=[label for _, label in metrics_to_plot],
+                x=[benchmark_metrics.get(key, 0) for key, _ in metrics_to_plot],
+                name=benchmark_data.get("name", "Benchmark"),
+                orientation="h",
+                marker_color="#9AA0A6",
+            )
+        )
+
+    fig.update_layout(
+        title="Performance Metrics Comparison",
+        barmode="group",
+        height=420,
+        xaxis_title="Value",
+        yaxis_title="Metric",
     )
 
     return fig
@@ -695,14 +877,9 @@ st.sidebar.write(f"**Available dates:** {KMEANS_MODEL_INFO['date_min']} to {KMEA
 st.sidebar.markdown("### Supervised model")
 st.sidebar.write(f"**Model:** {SUPERVISED_MODEL}")
 st.sidebar.write(f"**Description:** {SUPERVISED_MODEL_INFO['description']}")
-st.sidebar.write("**API:** Supervised API")
+st.sidebar.write("**Signal API:** Supervised API")
+st.sidebar.write("**Portfolio API:** Portfolio API")
 st.sidebar.write(f"**Available dates:** {SUPERVISED_MODEL_INFO['date_min']} to {SUPERVISED_MODEL_INFO['date_max']}")
-
-st.sidebar.markdown("### Portfolio model")
-st.sidebar.write(f"**Model:** {PORTFOLIO_MODEL}")
-st.sidebar.write(f"**Description:** {PORTFOLIO_MODEL_INFO['description']}")
-st.sidebar.write("**API:** Portfolio API")
-st.sidebar.write(f"**Available dates:** {PORTFOLIO_MODEL_INFO['date_min']} to {PORTFOLIO_MODEL_INFO['date_max']}")
 
 tab_regime, tab_supervised, tab_predicted, tab_portfolio = st.tabs(
     [
@@ -725,7 +902,7 @@ with tab_regime:
         with st.form("single_date_form"):
             selected_date = st.date_input(
                 "Prediction date",
-                value=date_min,
+                value=pd.to_datetime("2008-05-01").date(),
                 min_value=date_min,
                 max_value=date_max,
             )
@@ -749,7 +926,7 @@ with tab_regime:
                 col1, col2, col3, col4 = st.columns(4)
 
                 with col1:
-                    st.metric("Predicted regime", REGIME_DISPLAY.get(display_regime_label, display_regime_label))
+                    st.metric("Predicted regime", prettify_regime_label(display_regime_label))
 
                 with col2:
                     st.metric("Prediction date", row["prediction_date"].strftime("%Y-%m-%d"))
@@ -758,10 +935,7 @@ with tab_regime:
                     st.metric("Model name", data["model_name"])
 
                 with col4:
-                    if "vix_level" in row:
-                        st.metric("VIX", round(float(row["vix_level"]), 2))
-                    else:
-                        st.metric("VIX", "N/A")
+                    st.metric("VIX", round(float(row["vix_level"]), 2))
 
                 window_start = (selected_date_ts - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
                 window_end = (selected_date_ts + pd.Timedelta(days=30)).strftime("%Y-%m-%d")
@@ -859,8 +1033,11 @@ with tab_regime:
 with tab_supervised:
     st.header("Supervised Risk-Off Signal")
 
+    latest_threshold = 0.25
+
     try:
-        latest_data = get_latest_prediction(CURRENT_MODEL)
+        latest_data = get_latest_prediction(SUPERVISED_MODEL)
+        latest_threshold = float(latest_data.get("threshold", 0.25))
 
         col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -868,7 +1045,7 @@ with tab_supervised:
             st.metric("Latest date", latest_data["date"])
 
         with col2:
-            st.metric("Current regime", latest_data["regime"])
+            st.metric("Current regime", prettify_regime_label(latest_data["regime"]))
 
         with col3:
             st.metric("Risk-Off probability", format_percent(latest_data["proba"]))
@@ -915,41 +1092,38 @@ with tab_supervised:
             st.error("Start date must be earlier than or equal to end date.")
         else:
             try:
-                with st.spinner("Loading Risk-Off series..."):
-                    series_data = get_supervised_series(
-                        SUPERVISED_MODEL,
-                        pd.Timestamp(start_date).strftime("%Y-%m-%d"),
-                        pd.Timestamp(end_date).strftime("%Y-%m-%d"),
-                    )
+                series_data = get_supervised_series(
+                    SUPERVISED_MODEL,
+                    pd.Timestamp(start_date).strftime("%Y-%m-%d"),
+                    pd.Timestamp(end_date).strftime("%Y-%m-%d"),
+                )
 
-                st.session_state["supervised_series_data"] = series_data
-                st.session_state["supervised_series_loaded"] = True
+                series_df = pd.DataFrame(series_data["predictions"])
+                series_df["date"] = pd.to_datetime(series_df["date"])
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.metric("Observations", series_data["n_observations"])
+
+                with col2:
+                    st.metric("Risk-Off days", int((series_df["regime_label"] == "Risk-Off").sum()))
+
+                with col3:
+                    st.metric("Average probability", format_percent(series_df["proba"].mean()))
+
+                st.plotly_chart(
+                    create_supervised_series_chart(series_df, latest_threshold),
+                    use_container_width=True,
+                )
+
+                with st.expander("Raw API payload"):
+                    st.json(series_data)
 
             except requests.HTTPError as e:
                 st.error(f"API error: {e.response.text}")
             except requests.RequestException as e:
                 st.error(f"Connection error: {e}")
-
-    if st.session_state.get("supervised_series_loaded", False):
-        series_data = st.session_state["supervised_series_data"]
-        series_df = pd.DataFrame(series_data["predictions"])
-        series_df["date"] = pd.to_datetime(series_df["date"])
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric("Observations", series_data["n_observations"])
-
-        with col2:
-            st.metric("Risk-Off days", int((series_df["regime_label"] == "Risk-Off").sum()))
-
-        with col3:
-            st.metric("Average probability", format_percent(series_df["proba"].mean()))
-
-        st.plotly_chart(create_supervised_series_chart(series_df), use_container_width=True)
-
-        with st.expander("Raw API payload"):
-            st.json(series_data)
 
 with tab_predicted:
     st.header("Predicted Regime Analysis")
@@ -988,31 +1162,29 @@ with tab_predicted:
             date_end_str = pd.Timestamp(end_date).strftime("%Y-%m-%d")
 
             try:
-                with st.spinner("Running analysis..."):
-                    analyze_data = get_analyze_data(
-                        SUPERVISED_MODEL,
-                        date_start_str,
-                        date_end_str,
-                        DEFAULT_WEIGHTS,
-                    )
+                analyze_data = get_analyze_data(
+                    SUPERVISED_MODEL,
+                    date_start_str,
+                    date_end_str,
+                    DEFAULT_WEIGHTS,
+                )
 
-                    cumulative_data = get_cumulative_data(
-                        SUPERVISED_MODEL,
-                        date_start_str,
-                        date_end_str,
-                        DEFAULT_WEIGHTS,
-                    )
+                cumulative_data = get_cumulative_data(
+                    SUPERVISED_MODEL,
+                    date_start_str,
+                    date_end_str,
+                    DEFAULT_WEIGHTS,
+                )
 
                 st.session_state["analyze_data"] = analyze_data
                 st.session_state["cumulative_data"] = cumulative_data
-                st.session_state["analysis_loaded"] = True
 
             except requests.HTTPError as e:
                 st.error(f"API error: {e.response.text}")
             except requests.RequestException as e:
                 st.error(f"Connection error: {e}")
 
-    if st.session_state.get("analysis_loaded", False):
+    if "analyze_data" in st.session_state and "cumulative_data" in st.session_state:
         analyze_data = st.session_state["analyze_data"]
         cumulative_data = st.session_state["cumulative_data"]
 
@@ -1025,7 +1197,7 @@ with tab_predicted:
             "Select metric to compare",
             ["ann_return", "ann_vol", "sharpe", "hit_rate"],
             index=0,
-            key="analysis_metric_select",
+            key="predicted_metric",
         )
 
         st.plotly_chart(
@@ -1042,7 +1214,7 @@ with tab_predicted:
             asset_names,
             format_func=lambda x: ASSET_DISPLAY.get(x, x),
             index=0,
-            key="analysis_asset_select",
+            key="predicted_asset",
         )
 
         st.plotly_chart(
@@ -1059,8 +1231,8 @@ with tab_predicted:
 with tab_portfolio:
     st.header("Portfolio Dashboard")
 
-    date_min = pd.to_datetime(PORTFOLIO_MODEL_INFO["date_min"]).date()
-    date_max = pd.to_datetime(PORTFOLIO_MODEL_INFO["date_max"]).date()
+    date_min = pd.to_datetime(SUPERVISED_MODEL_INFO["date_min"]).date()
+    date_max = pd.to_datetime(SUPERVISED_MODEL_INFO["date_max"]).date()
 
     with st.form("portfolio_form"):
         col_start, col_end = st.columns(2)
@@ -1068,7 +1240,7 @@ with tab_portfolio:
         with col_start:
             start_date = st.date_input(
                 "Start date",
-                value=pd.to_datetime("2012-03-09").date(),
+                value=pd.to_datetime("2010-03-09").date(),
                 min_value=date_min,
                 max_value=date_max,
                 key="portfolio_start_date",
@@ -1083,81 +1255,124 @@ with tab_portfolio:
                 key="portfolio_end_date",
             )
 
-        st.subheader("Risk-On Allocation")
+        st.markdown("### Portfolio mode")
+        allocation_mode = st.radio(
+            "Choose portfolio construction mode",
+            ["Manual", "Optimized (Max Sharpe)"],
+            horizontal=True,
+        )
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            sp500_on = st.number_input("SP500", min_value=0.0, max_value=1.0, value=0.50, step=0.01, key="sp500_on")
-        with col2:
-            us10y_on = st.number_input("US_10Y", min_value=0.0, max_value=1.0, value=0.20, step=0.01, key="us10y_on")
-        with col3:
-            gold_on = st.number_input("Gold", min_value=0.0, max_value=1.0, value=0.20, step=0.01, key="gold_on")
-        with col4:
-            btc_on = st.number_input("BTC", min_value=0.0, max_value=1.0, value=0.10, step=0.01, key="btc_on")
+        st.markdown("### Risk-On Allocation")
+        on_col1, on_col2, on_col3, on_col4 = st.columns(4)
 
-        st.subheader("Risk-Off Allocation")
+        with on_col1:
+            alloc_on_sp500 = st.number_input("SP500", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_ON["SP500"], step=0.05, format="%.2f")
+        with on_col2:
+            alloc_on_us10y = st.number_input("US_10Y", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_ON["US_10Y"], step=0.05, format="%.2f")
+        with on_col3:
+            alloc_on_gold = st.number_input("Gold", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_ON["Gold"], step=0.05, format="%.2f")
+        with on_col4:
+            alloc_on_btc = st.number_input("BTC", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_ON["BTC"], step=0.05, format="%.2f")
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            sp500_off = st.number_input("SP500 ", min_value=0.0, max_value=1.0, value=0.10, step=0.01, key="sp500_off")
-        with col2:
-            us10y_off = st.number_input("US_10Y ", min_value=0.0, max_value=1.0, value=0.50, step=0.01, key="us10y_off")
-        with col3:
-            gold_off = st.number_input("Gold ", min_value=0.0, max_value=1.0, value=0.30, step=0.01, key="gold_off")
-        with col4:
-            btc_off = st.number_input("BTC ", min_value=0.0, max_value=1.0, value=0.10, step=0.01, key="btc_off")
+        st.markdown("### Risk-Off Allocation")
+        off_col1, off_col2, off_col3, off_col4 = st.columns(4)
+
+        with off_col1:
+            alloc_off_sp500 = st.number_input("SP500 ", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_OFF["SP500"], step=0.05, format="%.2f")
+        with off_col2:
+            alloc_off_us10y = st.number_input("US_10Y ", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_OFF["US_10Y"], step=0.05, format="%.2f")
+        with off_col3:
+            alloc_off_gold = st.number_input("Gold ", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_OFF["Gold"], step=0.05, format="%.2f")
+        with off_col4:
+            alloc_off_btc = st.number_input("BTC ", min_value=0.0, max_value=1.0, value=DEFAULT_ALLOC_OFF["BTC"], step=0.05, format="%.2f")
+
+        opt_w_min = 0.05
+        opt_w_max = 0.70
+        opt_source = "predicted"
+
+        if allocation_mode == "Optimized (Max Sharpe)":
+            st.markdown("### Optimization parameters")
+            opt_col1, opt_col2, opt_col3 = st.columns(3)
+
+            with opt_col1:
+                opt_w_min = st.number_input("Minimum weight", min_value=0.0, max_value=1.0, value=0.05, step=0.01, format="%.2f")
+            with opt_col2:
+                opt_w_max = st.number_input("Maximum weight", min_value=0.0, max_value=1.0, value=0.70, step=0.01, format="%.2f")
+            with opt_col3:
+                opt_source = st.selectbox("Optimization source", ["predicted"], index=0)
+
+        advanced_col1, advanced_col2 = st.columns(2)
+        with advanced_col1:
+            min_episode_days = st.number_input("Minimum episode days", min_value=1, max_value=100, value=20, step=1)
+        with advanced_col2:
+            transaction_cost = st.number_input("Transaction cost", min_value=0.0, max_value=0.05, value=0.001, step=0.001, format="%.3f")
 
         submitted = st.form_submit_button("Run portfolio backtest")
+
+    alloc_on = {
+        "SP500": alloc_on_sp500,
+        "US_10Y": alloc_on_us10y,
+        "Gold": alloc_on_gold,
+        "BTC": alloc_on_btc,
+    }
+
+    alloc_off = {
+        "SP500": alloc_off_sp500,
+        "US_10Y": alloc_off_us10y,
+        "Gold": alloc_off_gold,
+        "BTC": alloc_off_btc,
+    }
+
+    sum_col1, sum_col2 = st.columns(2)
+    with sum_col1:
+        st.caption(f"Risk-On allocation sum: {sum(alloc_on.values()):.2f}")
+    with sum_col2:
+        st.caption(f"Risk-Off allocation sum: {sum(alloc_off.values()):.2f}")
 
     if submitted:
         if start_date > end_date:
             st.error("Start date must be earlier than or equal to end date.")
         else:
-            alloc_on = {
-                "SP500": sp500_on,
-                "US_10Y": us10y_on,
-                "Gold": gold_on,
-                "BTC": btc_on,
-            }
+            on_error = validate_weights(alloc_on, "Risk-On allocation")
+            off_error = validate_weights(alloc_off, "Risk-Off allocation")
 
-            alloc_off = {
-                "SP500": sp500_off,
-                "US_10Y": us10y_off,
-                "Gold": gold_off,
-                "BTC": btc_off,
-            }
-
-            sum_on = sum(alloc_on.values())
-            sum_off = sum(alloc_off.values())
-
-            if abs(sum_on - 1.0) > 0.001:
-                st.error(f"Risk-On allocation must sum to 1.00. Current sum: {sum_on:.2f}")
-            elif abs(sum_off - 1.0) > 0.001:
-                st.error(f"Risk-Off allocation must sum to 1.00. Current sum: {sum_off:.2f}")
+            if on_error:
+                st.error(on_error)
+            elif off_error:
+                st.error(off_error)
+            elif allocation_mode == "Optimized (Max Sharpe)" and opt_w_min > opt_w_max:
+                st.error("Minimum weight must be lower than or equal to maximum weight.")
             else:
                 try:
-                    with st.spinner("Running portfolio backtest..."):
-                        portfolio_dashboard = get_portfolio_data(
-                            PORTFOLIO_MODEL,
-                            pd.Timestamp(start_date).strftime("%Y-%m-%d"),
-                            pd.Timestamp(end_date).strftime("%Y-%m-%d"),
-                            alloc_on,
-                            alloc_off,
-                        )
+                    portfolio_dashboard = get_portfolio_data(
+                        SUPERVISED_MODEL,
+                        pd.Timestamp(start_date).strftime("%Y-%m-%d"),
+                        pd.Timestamp(end_date).strftime("%Y-%m-%d"),
+                        "Manual" if allocation_mode == "Manual" else "Optimized",
+                        alloc_on,
+                        alloc_off,
+                        int(min_episode_days),
+                        float(transaction_cost),
+                        float(opt_w_min),
+                        float(opt_w_max),
+                        opt_source,
+                    )
 
                     st.session_state["portfolio_dashboard"] = portfolio_dashboard
-                    st.session_state["portfolio_loaded"] = True
+                    st.session_state["portfolio_mode"] = allocation_mode
 
                 except requests.HTTPError as e:
                     st.error(f"API error: {e.response.text}")
                 except requests.RequestException as e:
                     st.error(f"Connection error: {e}")
 
-    if st.session_state.get("portfolio_loaded", False):
+    if "portfolio_dashboard" in st.session_state:
         portfolio_dashboard = st.session_state["portfolio_dashboard"]
+        selected_mode = st.session_state.get("portfolio_mode", "Manual")
 
         portfolio_data = portfolio_dashboard["portfolio"]
         benchmark_data = portfolio_dashboard.get("benchmark")
+        optimizer_data = portfolio_dashboard.get("optimizer")
 
         st.subheader(portfolio_data["name"])
 
@@ -1188,11 +1403,26 @@ with tab_portfolio:
             use_container_width=True,
         )
 
-        if "weights" in portfolio_data and portfolio_data["weights"]:
-            st.plotly_chart(
-                create_weights_chart(portfolio_data["weights"]),
-                use_container_width=True,
-            )
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            if "weights" in portfolio_data:
+                st.plotly_chart(
+                    create_weights_chart(portfolio_data["weights"]),
+                    use_container_width=True,
+                )
+
+        with col_right:
+            if "regime_signal" in portfolio_data:
+                st.plotly_chart(
+                    create_regime_signal_chart(portfolio_data["regime_signal"]),
+                    use_container_width=True,
+                )
+
+        st.plotly_chart(
+            create_performance_comparison_chart(portfolio_data, benchmark_data),
+            use_container_width=True,
+        )
 
         with st.expander("Portfolio raw payload"):
             st.json(portfolio_dashboard)
